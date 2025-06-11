@@ -1,0 +1,16 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: io500-sc
+provisioner: exa.csi.ddn.com
+allowedTopologies:
+- matchLabelExpressions:
+  - key: topology.exa.csi.ddn.com/zone
+    values:
+    - zone-1
+allowVolumeExpansion: true
+parameters:
+  exaMountUid: "1001"
+  exaFS: "10.0.11.244@o2ib12:10.0.11.245@o2ib12:/exafs/k8s"
+  mountPoint: "/exafs"
+  bindMount: "false"
