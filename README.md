@@ -52,9 +52,9 @@ kubectl get pod -A | grep mpi-operator
 ```
 
 ### 3. Install EXAScaler CSI driver
-Find the latest version of EXA-CSI at https://github.com/DDNStorage/exa-csi-driver/releases and clone it with the desired version tag (e.g., 2.3.5):
+Pick a release from https://github.com/DDNStorage/exa-csi-driver/releases. Release tags have a `v` prefix; this guide uses the latest, `v2.10.1`:
 ```bash
-git clone -b 2.3.5 https://github.com/DDNStorage/exa-csi-driver.git
+git clone -b v2.10.1 https://github.com/DDNStorage/exa-csi-driver.git
 kubectl create ns exa-csi
 helm install -n exa-csi exascaler-csi-file-driver exa-csi-driver/deploy/helm-chart/
 ```
@@ -62,6 +62,8 @@ Verify that the driver pods are running:
 ```bash
 kubectl get pod -n exa-csi
 ```
+> When upgrading an existing installation instead, follow the upgrade notes in the exa-csi-driver README
+> (some versions require `kubectl delete csidriver exa.csi.ddn.com` before `helm upgrade`).
 
 ### 4. Create StorageClass for EXAScaler for IO500
 Edit `io500-sc.yaml` for your site before applying it:
