@@ -12,7 +12,8 @@ spec:
         spec:
           containers:
             - name: mpi-launcher
-              image: 172.16.44.253:5000/bmuser/io500:latest
+              image: io500:sc26
+              imagePullPolicy: IfNotPresent
               command:
                 - /bin/sh
                 - -c
@@ -42,7 +43,8 @@ spec:
         spec:
           containers:
             - name: mpi-worker
-              image: 172.16.44.253:5000/bmuser/io500:latest
+              image: io500:sc26
+              imagePullPolicy: IfNotPresent
               volumeMounts:
                 - name: io500-config-volume
                   mountPath: /io500-config

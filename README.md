@@ -1,58 +1,48 @@
 # IO500 on Kubernetes with DDN EXAScaler
 
-This guide explains how to run the IO500 benchmark in a Kubernetes environment with DDN EXAScaler using mpi-operator and CSI volumes. It covers MPI integration, CSI-based volume configuration, and includes practical YAML examples for launching benchmark jobs.
+This guide explains how to run the IO500 benchmark in a Kubernetes environment with DDN EXAScaler using mpi-operator and CSI volumes. It covers MPI integration, CSI-based volume configuration, and includes YAML examples for launching benchmark jobs.
 
 ## Overview
 
 - Run IO500 using MPIJob via [mpi-operator](https://github.com/kubeflow/mpi-operator)
 - Access EXAScaler storage with [exa-csi-driver](https://github.com/DDNStorage/exa-csi-driver)
-- Provides templates for PersistentVolume, StorageClass, PVC, ConfigMap, and MPIJob
-- Build and configure container images for benchmark workloads
+- Provides templates for StorageClass, PVC, ConfigMap, and MPIJob
+- Build the container image locally and load it on the worker nodes (no registry needed)
+
+> All addresses, host names and paths in this guide are placeholders. Replace them with your own.
+> Addresses use the documentation range `192.0.2.0/24`.
 
 ## Prerequisites
 
 * Kubernetes cluster
 * [mpi-operator](https://github.com/kubeflow/mpi-operator) installed
 * [DDN EXAScaler CSI driver](https://github.com/DDNStorage/exa-csi-driver) installed
+* Lustre client installed on every worker node
 
 ## Quick Start
 
 ### 1. Confirm that the Kubernetes cluster has at least 10 available worker nodes
-For example, the following is a 16-node cluster (1 control-plane node + 15 worker nodes). 5 worker nodes are cordoned, and only 10 worker nodes are used for the IO500 benchmark.
+For example, a 16-node cluster with 1 control-plane node and 15 worker nodes, of which 5 are cordoned so that exactly 10 worker nodes run IO500.
 
-For example, the following is a 16-node Kubernetes cluster consisting of:
-- 1 control-plane node (src01v)
-- 15 worker nodes (src02v–src16v)
-
-Check the current node status using:
+Check the current node status:
 ```bash
 kubectl get node
 ```
 Example output:
 ```bash
 NAME     STATUS                     ROLES           AGE   VERSION
-src01v   Ready                      control-plane   89d   v1.31.5
-src02v   Ready                      <none>          89d   v1.31.5
-src03v   Ready                      <none>          89d   v1.31.5
-src04v   Ready                      <none>          89d   v1.31.5
-src05v   Ready                      <none>          89d   v1.31.5
-src06v   Ready                      <none>          89d   v1.31.5
-src07v   Ready                      <none>          89d   v1.31.5
-src08v   Ready                      <none>          89d   v1.31.5
-src09v   Ready                      <none>          89d   v1.31.5
-src10v   Ready                      <none>          89d   v1.31.5
-src11v   Ready                      <none>          89d   v1.31.5
-src12v   Ready,SchedulingDisabled   <none>          89d   v1.31.5
-src13v   Ready,SchedulingDisabled   <none>          89d   v1.31.5
-src14v   Ready,SchedulingDisabled   <none>          89d   v1.31.5
-src15v   Ready,SchedulingDisabled   <none>          89d   v1.31.5
-src16v   Ready,SchedulingDisabled   <none>          89d   v1.31.5
+node01   Ready                      control-plane   89d   v1.31.5
+node02   Ready                      <none>          89d   v1.31.5
+...
+node11   Ready                      <none>          89d   v1.31.5
+node12   Ready,SchedulingDisabled   <none>          89d   v1.31.5
+...
+node16   Ready,SchedulingDisabled   <none>          89d   v1.31.5
 ```
-> In this example, src01v is the control-plane node, and src02v through src11v are the 10 available worker nodes for IO500.
+> In this example, node01 is the control-plane node, and node02 through node11 are the 10 worker nodes used for IO500.
 
 ### 2. Install mpi-operator
-IO500 requires MPI to run, and the MPI Operator allows you to run distributed MPI jobs across multiple Pods in a Kubernetes cluster.
-Install the MPI Operator using the following command:
+IO500 requires MPI. The MPI Operator runs distributed MPI jobs across multiple Pods.
 ```bash
 kubectl apply --server-side -f https://raw.githubusercontent.com/kubeflow/mpi-operator/v0.6.0/deploy/v2beta1/mpi-operator.yaml
 ```
@@ -60,206 +50,142 @@ Verify that the operator Pod is running:
 ```bash
 kubectl get pod -A | grep mpi-operator
 ```
-Example output:
-```bash
-mpi-operator             mpi-operator-84b4b8dbf4-v9ktf                                     1/1     Running   0               24s
-```
 
 ### 3. Install EXAScaler CSI driver
-Find the latest version of EXA-CSI at https://github.com/DDNStorage/exa-csi-driver/releases.
-Then, clone the repository using the desired version tag (e.g., 2.3.5):
+Find the latest version of EXA-CSI at https://github.com/DDNStorage/exa-csi-driver/releases and clone it with the desired version tag (e.g., 2.3.5):
 ```bash
 git clone -b 2.3.5 https://github.com/DDNStorage/exa-csi-driver.git
-```
-Create a dedicated namespace for the CSI driver:
-```bash
 kubectl create ns exa-csi
-```
-Install the driver using Helm:
-```bash
 helm install -n exa-csi exascaler-csi-file-driver exa-csi-driver/deploy/helm-chart/
 ```
 Verify that the driver pods are running:
 ```bash
 kubectl get pod -n exa-csi
 ```
-Example output:
-```bash
-NAME                                        READY   STATUS    RESTARTS   AGE
-exascaler-csi-controller-55555d9d67-g8jwr   5/5     Running   0          18s
-exascaler-csi-node-2ktnz                    2/2     Running   0          18s
-exascaler-csi-node-4247m                    2/2     Running   0          18s
-exascaler-csi-node-585rq                    2/2     Running   0          18s
-exascaler-csi-node-76lgn                    2/2     Running   0          18s
-exascaler-csi-node-959hf                    2/2     Running   0          18s
-...
-```
 
 ### 4. Create StorageClass for EXAScaler for IO500
-You need to modify the exaFS and mountPoint fields in the io500-sc.yaml file to match your EXAScaler environment before applying it.
+Edit `io500-sc.yaml` for your site before applying it:
+- `exaFS`: `<MGS-NID-1>:<MGS-NID-2>:/<fsname>/<subdir>` (e.g. `192.0.2.10@o2ib:192.0.2.11@o2ib:/exafs/k8s`)
+- `mountPoint`: the client mount point (e.g. `/exafs`)
+- `exaMountUid`: the uid of the benchmark user
+
 ```bash
 kubectl apply -f io500-k8s/io500-sc.yaml
 ```
-> NOTE: Bind mount is enabled by default in EXAScaler CSI, but it is explicitly disabled here to maximize performance across 10 clients.
+> NOTE: Bind mount is enabled by default in EXAScaler CSI, but it is explicitly disabled here (`bindMount: "false"`) to maximize performance across 10 clients.
 
-### 5. Build the IO500 container image and push it to the local registry
-Use the following commands to build the IO500 image:
+### 5. Build the IO500 image and load it on every worker node
+Build the image (IO500 pinned to the io500-sc26 tag; IOR commit optional), then load it directly into containerd on each worker node:
 ```bash
-sudo docker build -t 172.16.44.253:5000/bmuser/io500:latest -f io500-k8s/Dockerfile io500-k8s
+sudo docker build -t io500:sc26 \
+  --build-arg IO500_REF=io500-sc26 [--build-arg IOR_REF=<ior-commit>] \
+  -f io500-k8s/Dockerfile io500-k8s
+for n in <worker-nodes>; do
+  sudo docker save io500:sc26 | ssh $n sudo ctr -n k8s.io images import -
+done
 ```
-Then, push it to your local container registry:
-```bash
-sudo docker push 172.16.44.253:5000/bmuser/io500:latest
-```
-> **Note:** Replace `172.16.44.253:5000` with the address of your own local container registry.
+`io500.yaml` uses `image: io500:sc26` with `imagePullPolicy: IfNotPresent`, so no container registry is needed.
+> If you prefer a registry, tag and push the image to your own registry and change `image:` accordingly.
 
-### 6. Create a namespace and user in Kubernetes for the benchmark
-The `gen-k8s-user.sh` script creates a dedicated namespace, Kubernetes user, and sets up RBAC permissions for the benchmark.
-
-By default, the namespace is named `ns-<username>`. For example, if the username is `bmuser`, the namespace will be `ns-bmuser`.
-
-In this guide, the same username (`bmuser`) is used both as the Kubernetes user and as the corresponding Linux user on the IO500 client machine.
+### 6. Create a namespace and access for the benchmark user
+`gen-k8s-user.sh` creates a namespace `ns-<username>`, a ServiceAccount `<username>` in it, a Role limited to that namespace, and a kubeconfig with a short-lived token.
 
 ```bash
-./io500-k8s/gen-k8s-user.sh <username>
+./io500-k8s/gen-k8s-user.sh <username> [token-duration]
 ```
-Example:
+Example (token valid for 7 days, the default):
 ```bash
-./io500-k8s/gen-k8s-user.sh bmuser
+./io500-k8s/gen-k8s-user.sh bmuser 168h
 ```
-The script generates a file named <username>.kubeconfig, which should be copied to the machine where the IO500 benchmark will run—typically as the Linux user with the same name.
-> Note: If your Kubernetes username differs from your Linux username, ensure proper permissions and kubeconfig path mappings are handled accordingly.
-
-The `bmuser.kubeconfig` file needs to be copied to the Linux user's (`bmuser`) home directory as the default kubeconfig:
+The script writes `<username>.kubeconfig`. Install it as the default kubeconfig of the Linux user that runs the benchmark, readable only by that user:
 ```bash
-cp <path>/bmuser.kubeconfig <path-to-bmuser-home>/.kube/config
+install -D -m 600 bmuser.kubeconfig ~bmuser/.kube/config
 ```
-Then, switch to the bmuser Linux user and verify access to the Kubernetes cluster:
+Then, as that user, verify access:
 ```bash
 kubectl get pods
 ```
 Expected output:
-```plantext
+```plaintext
 No resources found in ns-bmuser namespace.
 ```
-Now that the user `bmuser` environment is set up, you are ready to prepare and submit the IO500 benchmark job.
+- **Never commit `*.kubeconfig`**, keys or certificates. They are listed in `.gitignore`.
+- To renew access, rerun the script. To revoke access immediately:
+  ```bash
+  kubectl -n ns-bmuser delete serviceaccount bmuser
+  ```
 
 ### 7. Run IO500
-All steps in this section should be performed as the `bmuser` Linux user, using the `bmuser.kubeconfig` file created earlier.
+All steps in this section are performed as the benchmark user, with the kubeconfig from step 6.
 
-Make sure the kubeconfig is correctly set (e.g., `~/.kube/config` points to `bmuser.kubeconfig`) before proceeding.
-#### 7.1 Create PVC for IO500
-Create a PersistentVolumeClaim (PVC) that IO500 will use to write its benchmark files.
-
-The storage capacity specified in `io500-pvc.yaml` should be adjusted to suit your environment.
-
+#### 7.1 Create a PVC for IO500
+Create a PersistentVolumeClaim that IO500 uses for its benchmark files. Adjust the capacity in `io500-pvc.yaml` for your environment.
 ```bash
 kubectl apply -f io500-k8s/io500-pvc.yaml
-```
-Verify that the PVC is bound:
-```bash
 kubectl get pvc
 ```
-Expected output:
-```plaintext
-NAME        STATUS   VOLUME                                         CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
-io500-pvc   Bound    pvc-exa-ba0b1568-0a14-4956-955e-574a510276af   1Ti        RWX            io500-sc       <unset>                 6s
-```
+The PVC `io500-pvc` should be `Bound` with storage class `io500-sc`.
 
 #### 7.2 Generate myio500.sh and myio500.ini
-The container image does not include `io500.sh` or `io500.ini`, as these files typically require user-specific customization. Instead, they are mounted into the container using a Kubernetes ConfigMap.
+The image does not include `io500.sh` or `io500.ini`, as these are site-specific. They are provided through a ConfigMap.
 
-Start a temporary pod to generate the default `io500.ini` and retrieve the script:
+Start a temporary pod, generate the default ini and copy both files out:
 ```bash
-kubectl run io500-init --image=172.16.44.253:5000/bmuser/io500:latest --restart=Never --command -- sleep 3600
+kubectl run io500-init --image=io500:sc26 --image-pull-policy=IfNotPresent --restart=Never --command -- sleep 3600
+kubectl exec io500-init -- /bin/bash -c "/io500/io500 --list > /io500/myio500.ini"
+kubectl cp io500-init:/io500/io500.sh ./myio500.sh
+kubectl cp io500-init:/io500/myio500.ini ./myio500.ini
+kubectl delete pod io500-init
 ```
-Generate myio500.ini from the io500 --list command:
-```bash
-kubectl exec -it io500-init -- /bin/bash -c "/io500/io500 --list | tee /io500/myio500.ini"
-```
-Copy io500.sh and the generated myio500.ini from the container to your local directory:
-```bash
-kubectl cp ns-bmuser/io500-init:/io500/io500.sh ./myio500.sh
-```
-```bash
-kubectl cp ns-bmuser/io500-init:/io500/myio500.ini ./myio500.ini
-```
-Delete the temporary io500-init pod after copying the files:
-```bash
-kubectl delete pod io500-init -n ns-bmuser
-```
+
 #### 7.3 Modify myio500.sh and myio500.ini and register them as a ConfigMap
-Modify myio500.sh and myio500.ini for your environments, and register them as a ConfigMap.
-
 Example: run 20 MPI processes across 20 Pods (1 process per Pod), spread over 10 worker nodes.
+
 In `io500-k8s/io500.yaml`:
-```bash
+```yaml
     Worker:
       replicas: 20
 ```
-In myio500.sh:
+In `myio500.sh`:
 ```bash
 io500_mpirun="mpirun"
 io500_mpiargs="--allow-run-as-root -np 20"
 ```
-Create a ConfigMap from the modified files:
+Create the ConfigMap:
 ```bash
 kubectl create configmap io500-user-config \
---from-file=myio500.sh=myio500.sh \
---from-file=myio500.ini=myio500.ini
+  --from-file=myio500.sh=myio500.sh \
+  --from-file=myio500.ini=myio500.ini
 ```
 
-#### 7.3 Run io500 using MPIJob
-Apply the MPIJob configuration to start the IO500 benchmark:
+#### 7.4 Run IO500 using MPIJob
 ```bash
 kubectl apply -f io500-k8s/io500.yaml
-```
-Check the status of the Pods:
-```bash
 kubectl get pod -o wide
 ```
-```bash
-Example output (20 worker pods and 1 launcher pod running across 10 worker nodes):
-NAME                   READY   STATUS    RESTARTS   AGE   IP             NODE     NOMINATED NODE   READINESS GATES
-io500-launcher-wl8c2   1/1     Running   0          6s    10.244.8.2     src09v   <none>           <none>
-io500-worker-0         1/1     Running   0          9s    10.244.18.4    src06v   <none>           <none>
-io500-worker-1         1/1     Running   0          9s    10.244.13.8    src07v   <none>           <none>
-io500-worker-10        1/1     Running   0          8s    10.244.14.8    src10v   <none>           <none>
-io500-worker-11        1/1     Running   0          7s    10.244.2.141   src03v   <none>           <none>
-io500-worker-12        1/1     Running   0          7s    10.244.1.214   src02v   <none>           <none>
-io500-worker-13        1/1     Running   0          7s    10.244.7.6     src05v   <none>           <none>
-io500-worker-14        1/1     Running   0          7s    10.244.3.6     src04v   <none>           <none>
-io500-worker-15        1/1     Running   0          7s    10.244.13.9    src07v   <none>           <none>
-io500-worker-16        1/1     Running   0          6s    10.244.18.5    src06v   <none>           <none>
-io500-worker-17        1/1     Running   0          6s    10.244.8.254   src09v   <none>           <none>
-io500-worker-18        1/1     Running   0          6s    10.244.17.18   src08v   <none>           <none>
-io500-worker-19        1/1     Running   0          6s    10.244.11.13   src11v   <none>           <none>
-io500-worker-2         1/1     Running   0          9s    10.244.1.213   src02v   <none>           <none>
-io500-worker-3         1/1     Running   0          9s    10.244.8.253   src09v   <none>           <none>
-io500-worker-4         1/1     Running   0          9s    10.244.3.5     src04v   <none>           <none>
-io500-worker-5         1/1     Running   0          9s    10.244.2.140   src03v   <none>           <none>
-io500-worker-6         1/1     Running   0          8s    10.244.11.12   src11v   <none>           <none>
-io500-worker-7         1/1     Running   0          8s    10.244.14.7    src10v   <none>           <none>
-io500-worker-8         1/1     Running   0          8s    10.244.17.17   src08v   <none>           <none>
-io500-worker-9         1/1     Running   0          8s    10.244.7.5     src05v   <none>           <none>
-```
-As shown above, IO500 runs across 20 Pods distributed over 10 worker nodes.
+You should see 1 launcher pod and 20 worker pods spread over the 10 worker nodes.
 
-To monitor progress in real time, check the logs of the launcher Pod:
+Follow the progress in the launcher log:
 ```bash
-kubectl logs io500-launcher-xxxxx
+kubectl logs -f $(kubectl get pod -o name | grep io500-launcher)
 ```
-Example output:
-```bash
-IO500 version io500-isc25_v1 (standard)
+The first line shows the IO500 version, for example:
+```plaintext
+IO500 version io500-sc26_v3 (standard)
 ```
 
 ### Additional Notes
 #### Update the ConfigMap
-If you want to modify myio500.sh or myio500.ini, you need to update the io500-user-config ConfigMap after making changes.
+After changing `myio500.sh` or `myio500.ini`, update the ConfigMap:
 ```bash
 kubectl create configmap io500-user-config \
---from-file=myio500.sh=myio500.sh \
---from-file=myio500.ini=myio500.ini \
---dry-run=client -o yaml | kubectl apply -f -
+  --from-file=myio500.sh=myio500.sh \
+  --from-file=myio500.ini=myio500.ini \
+  --dry-run=client -o yaml | kubectl apply -f -
 ```
+
+## Security notes
+- Do not commit kubeconfigs, keys or certificates; `.gitignore` covers `*.kubeconfig`, `*.key`, `*.crt`, `*.csr`.
+- The repository contains placeholders only; replace addresses and host names with your own locally.
+- Access tokens are short-lived; revoke access by deleting the ServiceAccount.
+- The benchmark user's Role is limited to its own namespace and cannot change RBAC.

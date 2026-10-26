@@ -11,6 +11,6 @@ allowedTopologies:
 allowVolumeExpansion: true
 parameters:
   exaMountUid: "1001"
-  exaFS: "10.0.11.244@o2ib12:10.0.11.245@o2ib12:/exafs/k8s"
+  exaFS: "<MGS-NID-1>:<MGS-NID-2>:/<fsname>/<subdir>"   # e.g. "192.0.2.10@o2ib:192.0.2.11@o2ib:/exafs/k8s"
   mountPoint: "/exafs"
   bindMount: "false"

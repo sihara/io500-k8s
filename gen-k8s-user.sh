@@ -1,69 +1,32 @@
 #!/bin/bash
-
+# Create a namespace, a ServiceAccount and a namespace-scoped Role for an IO500 benchmark user,
+# and write a kubeconfig with a short-lived token.
+# Usage: ./gen-k8s-user.sh <username> [token-duration, default 168h]
 set -e
 
 if [ -z "$1" ]; then
-  echo "Usage: $0 <username>"
+  echo "Usage: $0 <username> [token-duration]"
   exit 1
 fi
 
 USER=$1
+DURATION=${2:-168h}
 NAMESPACE="ns-$USER"
-CSR_NAME=$USER
 KUBECONFIG_FILE="${USER}.kubeconfig"
 
-echo "[1] Creating namespace: $NAMESPACE"
+echo "[1] Creating namespace $NAMESPACE and ServiceAccount $USER"
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n "$NAMESPACE" create serviceaccount "$USER" --dry-run=client -o yaml | kubectl apply -f -
 
-echo "[2] Generating key and CSR for $USER"
-openssl genrsa -out "${USER}.key" 2048
-openssl req -new -key "${USER}.key" -out "${USER}.csr" -subj "/CN=${USER}"
-
-echo "[3] Base64 encode CSR and prepare Kubernetes CSR manifest"
-ENCODED_CSR=$(base64 < "${USER}.csr" | tr -d '\n')
-
-cat <<EOF > "${USER}-csr.yaml"
-apiVersion: certificates.k8s.io/v1
-kind: CertificateSigningRequest
-metadata:
-  name: ${CSR_NAME}
-spec:
-  request: ${ENCODED_CSR}
-  signerName: kubernetes.io/kube-apiserver-client
-  usages:
-  - client auth
-EOF
-
-echo "[4] Applying and approving CSR"
-kubectl apply -f "${USER}-csr.yaml"
-kubectl certificate approve "${CSR_NAME}"
-
-echo "[5] Fetching and saving the certificate"
-kubectl get csr "${CSR_NAME}" -o jsonpath='{.status.certificate}' | base64 -d > "${USER}.crt"
-
-echo "[6] Creating kubeconfig for ${USER}"
-kubectl config set-credentials "${USER}" \
-  --client-key="${USER}.key" \
-  --client-certificate="${USER}.crt" \
-  --embed-certs=true
-
-kubectl config set-context "${USER}" \
-  --cluster="$(kubectl config view -o jsonpath='{.clusters[0].name}')" \
-  --user="${USER}" \
-  --namespace="${NAMESPACE}"
-
-kubectl config view --minify --flatten --context="${USER}" > "${KUBECONFIG_FILE}"
-
-echo "[7] Creating Role and RoleBinding for namespace ${NAMESPACE}"
-
-cat <<EOF | kubectl apply -f -
+echo "[2] Creating Role and RoleBinding (namespace only, no RBAC changes)"
+cat <<YAML | kubectl apply -f -
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: ${USER}-admin
   namespace: ${NAMESPACE}
 rules:
-- apiGroups: ["", "apps", "batch", "rbac.authorization.k8s.io", "kubeflow.org"]
+- apiGroups: ["", "apps", "batch", "kubeflow.org"]
   resources: ["*"]
   verbs: ["*"]
 ---
@@ -73,19 +36,43 @@ metadata:
   name: ${USER}-admin-binding
   namespace: ${NAMESPACE}
 subjects:
-- kind: User
+- kind: ServiceAccount
   name: ${USER}
-  apiGroup: rbac.authorization.k8s.io
+  namespace: ${NAMESPACE}
 roleRef:
   kind: Role
   name: ${USER}-admin
   apiGroup: rbac.authorization.k8s.io
-EOF
+YAML
 
-echo "[8] Cleaning up local kubeconfig context and user"
-kubectl config unset users."${USER}"
-kubectl config unset contexts."${USER}"
-rm -f ${USER}.crt ${USER}.csr ${USER}.key ${USER}-csr.yaml 
+echo "[3] Issuing a token valid for ${DURATION}"
+TOKEN=$(kubectl -n "$NAMESPACE" create token "$USER" --duration="$DURATION")
 
+echo "[4] Writing ${KUBECONFIG_FILE}"
+CLUSTER=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}')
+SERVER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+CA=$(kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
+umask 077
+cat > "$KUBECONFIG_FILE" <<CFG
+apiVersion: v1
+kind: Config
+clusters:
+- name: ${CLUSTER}
+  cluster:
+    server: ${SERVER}
+    certificate-authority-data: ${CA}
+users:
+- name: ${USER}
+  user:
+    token: ${TOKEN}
+contexts:
+- name: ${USER}
+  context:
+    cluster: ${CLUSTER}
+    user: ${USER}
+    namespace: ${NAMESPACE}
+current-context: ${USER}
+CFG
 
-echo "Done. Kubeconfig written to ${KUBECONFIG_FILE}"
+echo "Done. ${KUBECONFIG_FILE} written (mode 600, token expires in ${DURATION}). Do not commit it."
+echo "Revoke: kubectl -n ${NAMESPACE} delete serviceaccount ${USER}"
