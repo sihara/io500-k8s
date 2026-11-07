@@ -204,8 +204,8 @@ kubectl create configmap io500-user-config \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-## Tips for better results
-The YAML files in this guide are kept simple. These changes helped in our runs:
+## Tips
+The YAML files in this guide are kept simple. Tips for running IO500 on Kubernetes:
 
 - **Spread the worker pods evenly.** Without a rule, the scheduler may put more pods on some nodes than others. Add this to the Worker template in `io500.yaml`:
   ```yaml
@@ -221,6 +221,20 @@ The YAML files in this guide are kept simple. These changes helped in our runs:
 - **If ior-hard uses collective MPI-IO:**
   1. The pods need high network bandwidth between them, because collective I/O exchanges the data over MPI before it is written.
   2. An MPI built with ROMIO's Lustre driver can be used (optional).
+- **Using `lfs` in `setup()`.** To set Lustre layouts for the IO500 directories (for example `lfs setstripe` for ior-hard or `lfs setdirstripe` for mdtest), the launcher pod needs the `lfs` command.
+  `Dockerfile-sc26` installs it in the image from the Lustre client packages in `debs/`.
+  With `Dockerfile-isc25`, mount the host's `lfs` into the launcher pod instead (the launcher node needs `lustre-client-utils`):
+  ```yaml
+              volumeMounts:
+                - {name: lfs, mountPath: /usr/bin/lfs, readOnly: true}
+                - {name: lustreapi, mountPath: /usr/lib/liblustreapi.so.1, readOnly: true}
+                - {name: lnetconfig, mountPath: /usr/lib/liblnetconfig.so.4, readOnly: true}
+          volumes:
+            - {name: lfs, hostPath: {path: /usr/bin/lfs, type: File}}
+            - {name: lustreapi, hostPath: {path: /usr/lib/liblustreapi.so.1.0.0, type: File}}
+            - {name: lnetconfig, hostPath: {path: /usr/lib/liblnetconfig.so.4.0.0, type: File}}
+  ```
+  The library paths are those of Ubuntu clients (RHEL-family clients use `/usr/lib64`). `lfs` also needs `libreadline8` and `libjson-c5` in the image.
 - **Lustre client parameters** are set once on the MGS (step 4.1). Newer EXA CSI driver versions can instead set them per client in the StorageClass (`exaParams`). Check them on a node during the run with `lctl get_param`.
 
 ## Security notes
