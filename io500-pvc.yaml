@@ -8,4 +8,4 @@ spec:
     - ReadWriteMany
   resources:
     requests:
-      storage: 1Ti
+      storage: 400Ti   # becomes the project quota of the PVC directory; larger than all IO500 data

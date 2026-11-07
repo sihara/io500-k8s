@@ -13,4 +13,4 @@ parameters:
   exaMountUid: "1001"
   exaFS: "<MGS-NID-1>:<MGS-NID-2>:/<fsname>/<subdir>"   # e.g. "192.0.2.10@o2ib:192.0.2.11@o2ib:/exafs/k8s"
   mountPoint: "/exafs"
-  bindMount: "false"
+  bindMount: "false"   # default "true" (pods on a node share one mount). "false" = one Lustre client per pod: for a few pods per node only.

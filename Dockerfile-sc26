@@ -1,0 +1,55 @@
+# io500 image for Kubernetes (MPI Operator MPIJob, MPICH)
+#   io500 : tag io500-sc26_v4; IOR and pfind at the hashes pinned in its prepare.sh
+#   MPICH : 5.0.2, ch4:ucx, ROMIO lustre+ufs
+#   UCX   : DOCA packages
+#   Lustre: debs/ holds lustre-client-utils, lustre-dev and lustre-client-modules of the client version in use;
+#           the headers are used to build ROMIO's Lustre driver, lfs (lustre-client-utils) is installed in the image
+#           for setup() in myio500.sh
+ARG BASE=ubuntu:26.04
+ARG DOCA_URL=http://linux.mellanox.com/public/repo/doca/3.4.1/ubuntu26.04/x86_64/
+
+FROM ${BASE} AS builder
+ARG DOCA_URL
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential autoconf automake libtool m4 pkg-config git ca-certificates file python3 curl gnupg \
+      libnuma-dev libaio-dev zlib1g-dev libyaml-dev libkeyutils-dev libssl-dev
+RUN curl -fsSL ${DOCA_URL}GPG-KEY-Mellanox.pub | gpg --dearmor > /etc/apt/keyrings/doca.gpg \
+ && printf 'Types: deb\nURIs: %s\nSuites: ./\nSigned-By: /etc/apt/keyrings/doca.gpg\n' "${DOCA_URL}" > /etc/apt/sources.list.d/doca.sources \
+ && apt-get update && apt-get install -y --no-install-recommends rdma-core libibverbs-dev librdmacm-dev ucx
+
+# Lustre headers for ROMIO's ad_lustre driver
+COPY debs/ /tmp/debs/
+RUN dpkg -i --force-depends /tmp/debs/lustre-client-utils_*.deb /tmp/debs/lustre-dev_*.deb \
+ && mkdir -p /tmp/modhdr && dpkg-deb -x /tmp/debs/lustre-client-modules-*.deb /tmp/modhdr \
+ && cp -a /tmp/modhdr/usr/include/linux/. /usr/include/linux/
+
+# MPICH 5.0.2
+WORKDIR /build
+RUN curl -fsSLO https://www.mpich.org/static/downloads/5.0.2/mpich-5.0.2.tar.gz \
+ && tar xf mpich-5.0.2.tar.gz && cd mpich-5.0.2 \
+ && ./configure --prefix=/opt/mpich --with-device=ch4:ucx --with-ucx=/usr \
+      --with-file-system=lustre+ufs --disable-fortran --disable-cxx CFLAGS="-O3 -DNDEBUG" \
+ && make -j"$(nproc)" && make install
+
+# io500 io500-sc26_v4
+ENV PATH=/opt/mpich/bin:$PATH
+RUN git clone https://github.com/IO500/io500.git /build/io500 && cd /build/io500 \
+ && git checkout io500-sc26_v4 && ./prepare.sh
+
+FROM ${BASE}
+ARG DOCA_URL
+ENV DEBIAN_FRONTEND=noninteractive
+COPY --from=builder /etc/apt/keyrings/doca.gpg /etc/apt/keyrings/doca.gpg
+COPY debs/ /tmp/debs/
+# libreadline8 and libjson-c5: needed by lfs
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libnuma1 libaio1t64 \
+      openssh-client openssh-server iproute2 procps hostname libyaml-0-2 libkeyutils1 libreadline8 libjson-c5 \
+ && printf 'Types: deb\nURIs: %s\nSuites: ./\nSigned-By: /etc/apt/keyrings/doca.gpg\n' "${DOCA_URL}" > /etc/apt/sources.list.d/doca.sources \
+ && apt-get update && apt-get install -y --no-install-recommends rdma-core ibverbs-providers libibverbs1 librdmacm1 ucx \
+ && dpkg -i --force-depends /tmp/debs/lustre-client-utils_*.deb && rm -rf /tmp/debs /var/lib/apt/lists/* \
+ && lfs --version
+COPY --from=builder /opt/mpich /opt/mpich
+COPY --from=builder /build/io500 /io500
+ENV PATH=/opt/mpich/bin:/io500:$PATH LD_LIBRARY_PATH=/opt/mpich/lib
+WORKDIR /io500
